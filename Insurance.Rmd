@@ -1,0 +1,161 @@
+---
+title: "Medical Insurance Regression"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+**Libraries**
+```{r}
+library(ggplot2)
+library(car)
+library(randomForest)
+```
+
+
+**Read in Dataset & Summary Statistics**
+```{r}
+insurance <- read.csv("insurance.csv")
+head(insurance)
+summary(insurance)
+```
+**Exploratory Data Analysis**
+```{r}
+colnames(insurance)
+nrow(insurance)
+sum(duplicated(insurance))
+
+#Remove duplicate row
+insurance <- insurance[!duplicated(insurance),]
+
+sum(is.na(insurance))
+sum(is.null(insurance))
+
+#Histogram of Charges
+hist(insurance$charges)
+
+#Scatterplot of charges by age with smokers as color var
+ggplot(data=insurance, aes(x=age, y=charges, color=smoker)) + 
+  geom_point()
+
+#Boxplot of price by region
+ggplot(data=insurance, aes(x=region, y=charges)) + geom_boxplot()
+
+#Correlation Matrix
+round(cor(insurance[c('age', 'bmi', 'children', 'charges')]), 3)
+
+```
+
+**ANOVA:** Are charges equal by region?
+```{r}
+anova <- aov(charges ~ region, data=insurance)
+summary(anova)
+```
+The p-value here (0.0328) is less than a reasonable $\alpha$ of 0.05, we rejectt the null hypothesis of equal means in charges by region. At least one group has a statistically signifigant difference in means. We can use a tukey pairwise comparision.
+
+```{r}
+TukeyHSD(anova)
+```
+With an adjusted p-value of 0.0477148, a signifigant difference is found between the southwest and southeast regions.
+
+**Check ANOVA Assumptions**
+```{r}
+par(mfrow=c(2,2))
+plot(anova)
+```
+
+Normality is clearly violated. However, we can verify with shapiro-wilks.
+```{r}
+shapiro.test(x=residuals(object = anova))
+```
+The null is that the data comes from a normal distribution. Since our p-value is very low, we reject the null hypothesis and conclude that the data comes from a distibution that is different from normal. We can turn to non-parametric testing.
+
+```{r}
+kruskal.test(charges ~ region,  data=insurance)
+```
+
+With a p-value of 0.2016, we fail to reject the null (differnce in means between groups) and **can conclude that there is no statistically signifigant difference in mean charges by region.**
+
+**Ordinary Regression with OLS**
+```{R}
+#train and test split
+set.seed(703)
+
+train_indices <- sample(1:nrow(insurance), size = 0.75 * nrow(insurance)) #calc n training rows
+
+
+train_data<-insurance[train_indices,]
+test_data<-insurance[-train_indices,]
+
+lr_ols<-lm(charges ~ age+sex+bmi+children+smoker, data = train_data)
+summary(lr_ols)
+```
+```{r}
+#make predictions
+lr_ols_pred<-predict(lr_ols, test_data)
+
+#function to calculate RMSE
+rmse <- function(actual, predicted) {
+  sqrt(mean((actual - predicted)^2))
+}
+
+#function to calculate R2
+r_squared <- function(actual, predicted) {
+  ss_res <- sum((actual - predicted)^2)
+  ss_tot <- sum((actual - mean(actual))^2)
+  1 - (ss_res / ss_tot)
+}
+
+#compute RMSE and R-squared
+actual <- test_data$charges
+rmse_value <- rmse(actual, lr_ols_pred)
+r_squared_value <- r_squared(actual, lr_ols_pred)
+
+print(paste("RMSE:", rmse_value))
+print(paste("R-squared:", r_squared_value))
+```
+
+**Check Assumptions**
+```{r}
+par(mfrow=c(2,2))
+plot(lr_ols)
+durbinWatsonTest(lr_ols)
+```
+
+**The Residuals vs. Fitted plot suggests a non-linear relationship, the Normal QQ plot shows non-normally distributed residuals, and the Scale-Location plot indicates heteroscedasticity. These violations imply that predictions from the model may be inefficient or inaccurate.**
+
+
+We can turn to a random forest regression to see if that improves predictions, since the assumptions for OLS regression were not met.
+```{r}
+#train model
+set.seed(703)
+rf_model <- randomForest(charges ~ age + sex + bmi + children + smoker, data = train_data, importance = TRUE)
+
+#make predictions
+rf_pred <- predict(rf_model, test_data)
+
+#compute rmse and r squared
+rf_rmse_value <- rmse(actual, rf_pred)
+rf_r_squared_value <- r_squared(actual, rf_pred)
+
+print(paste("Random Forest RMSE:", rf_rmse_value))
+print(paste("Random Forest R-squared:", rf_r_squared_value))
+```
+
+To check the quality/reliability of our random forest, we can check for aspects like variable importance, model overfitting, and model stability:
+
+```{r}
+# Variable Importance
+importance(rf_model)
+varImpPlot(rf_model)
+
+# Compare performance on training data
+rf_train_pred <- predict(rf_model, train_data)
+train_rmse_value <- rmse(train_data$charges, rf_train_pred)
+train_r_squared_value <- r_squared(train_data$charges, rf_train_pred)
+
+print(paste("Training RMSE:", train_rmse_value))
+print(paste("Training R-squared:", train_r_squared_value))
+
+# Error rate and number of trees
+plot(rf_model)
+```
